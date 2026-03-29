@@ -18,6 +18,8 @@ const pool = new Pool({
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
+const onlineWindowSeconds = 20;
+
 function fail(response, statusCode, message) {
   response.status(statusCode).json({ error: message });
 }
@@ -274,7 +276,15 @@ app.get("/api/friends", requireAuth, async (request, response, next) => {
   try {
     const query = await pool.query(
       `
-        SELECT u.id, u.nickname, u.email
+        SELECT u.id,
+               u.nickname,
+               u.email,
+               EXISTS (
+                 SELECT 1
+                 FROM sessions s
+                 WHERE s.user_id = u.id
+                   AND s.last_seen_at >= NOW() - ($2 * INTERVAL '1 second')
+               ) AS online
         FROM friendships f
         JOIN users u ON u.id = CASE
           WHEN f.user_one_id = $1 THEN f.user_two_id
@@ -283,7 +293,7 @@ app.get("/api/friends", requireAuth, async (request, response, next) => {
         WHERE f.user_one_id = $1 OR f.user_two_id = $1
         ORDER BY LOWER(u.nickname) ASC;
       `,
-      [request.user.id]
+      [request.user.id, onlineWindowSeconds]
     );
 
     response.json({
@@ -291,8 +301,25 @@ app.get("/api/friends", requireAuth, async (request, response, next) => {
         id: Number(row.id),
         nickname: row.nickname,
         email: row.email,
+        online: Boolean(row.online),
       })),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/logout", requireAuth, async (request, response, next) => {
+  try {
+    await pool.query(
+      `
+        DELETE FROM sessions
+        WHERE token = $1;
+      `,
+      [request.user.token]
+    );
+
+    response.json({ ok: true });
   } catch (error) {
     next(error);
   }
