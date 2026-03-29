@@ -16,9 +16,11 @@ const pool = new Pool({
 });
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "25mb" }));
 
 const onlineWindowSeconds = 20;
+const maxAttachmentBytes = 20 * 1024 * 1024;
+const allowedAttachmentCategories = new Set(["image", "video", "audio", "file"]);
 
 function fail(response, statusCode, message) {
   response.status(statusCode).json({ error: message });
@@ -77,11 +79,24 @@ async function ensureSchema() {
       sender_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       receiver_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       body TEXT NOT NULL,
+      attachment_name TEXT,
+      attachment_mime_type TEXT,
+      attachment_category TEXT,
+      attachment_data BYTEA,
+      attachment_size_bytes BIGINT NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
     CREATE INDEX IF NOT EXISTS messages_pair_created_at_idx
       ON messages(sender_id, receiver_id, created_at);
+  `);
+
+  await pool.query(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_mime_type TEXT;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_category TEXT;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_data BYTEA;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_size_bytes BIGINT NOT NULL DEFAULT 0;
   `);
 }
 
@@ -97,6 +112,61 @@ function orderedUserIds(firstUserId, secondUserId) {
   return firstUserId < secondUserId
     ? [firstUserId, secondUserId]
     : [secondUserId, firstUserId];
+}
+
+function parseAttachment(rawAttachment) {
+  if (!rawAttachment || typeof rawAttachment !== "object") {
+    return { attachment: null };
+  }
+
+  const fileName = String(rawAttachment.name || "").trim();
+  const mimeType = String(rawAttachment.mime_type || "").trim();
+  const requestedCategory = String(rawAttachment.category || "").trim().toLowerCase();
+  const category = allowedAttachmentCategories.has(requestedCategory) ? requestedCategory : "file";
+  const base64 = String(rawAttachment.data_base64 || "").trim();
+
+  if (!fileName || !base64) {
+    return { error: "Pick a valid file before sending." };
+  }
+
+  let data;
+  try {
+    data = Buffer.from(base64, "base64");
+  } catch (_error) {
+    return { error: "The selected attachment could not be read." };
+  }
+
+  if (!data || data.length === 0) {
+    return { error: "The selected attachment is empty." };
+  }
+
+  if (data.length > maxAttachmentBytes) {
+    return { error: "Attachments must be 20 MB or smaller." };
+  }
+
+  return {
+    attachment: {
+      fileName,
+      mimeType,
+      category,
+      data,
+      sizeBytes: data.length,
+    },
+  };
+}
+
+function attachmentResponse(row) {
+  if (!row.attachment_name || !row.attachment_data) {
+    return null;
+  }
+
+  return {
+    name: row.attachment_name,
+    mime_type: row.attachment_mime_type || "",
+    category: row.attachment_category || "file",
+    size_bytes: Number(row.attachment_size_bytes || 0),
+    data_base64: Buffer.from(row.attachment_data).toString("base64"),
+  };
 }
 
 async function authenticatedUser(request) {
@@ -513,7 +583,9 @@ app.get("/api/conversations/:friendId", requireAuth, async (request, response, n
 
     const query = await pool.query(
       `
-        SELECT id, sender_id, receiver_id, body, created_at
+        SELECT id, sender_id, receiver_id, body, created_at,
+               attachment_name, attachment_mime_type, attachment_category,
+               attachment_size_bytes, attachment_data
         FROM messages
         WHERE (sender_id = $1 AND receiver_id = $2)
            OR (sender_id = $2 AND receiver_id = $1)
@@ -529,6 +601,7 @@ app.get("/api/conversations/:friendId", requireAuth, async (request, response, n
         receiver_id: Number(row.receiver_id),
         body: row.body,
         created_at: row.created_at,
+        attachment: attachmentResponse(row),
       })),
     });
   } catch (error) {
@@ -540,13 +613,19 @@ app.post("/api/messages", requireAuth, async (request, response, next) => {
   try {
     const receiverId = Number.parseInt(String(request.body.receiverId), 10);
     const body = String(request.body.body || "").trim();
+    const attachmentResult = parseAttachment(request.body.attachment);
 
     if (!Number.isFinite(receiverId) || receiverId <= 0) {
       fail(response, 400, "Pick a friend before sending.");
       return;
     }
 
-    if (!body) {
+    if (attachmentResult.error) {
+      fail(response, 400, attachmentResult.error);
+      return;
+    }
+
+    if (!body && !attachmentResult.attachment) {
       fail(response, 400, "Write a message before sending.");
       return;
     }
@@ -558,10 +637,28 @@ app.post("/api/messages", requireAuth, async (request, response, next) => {
 
     await pool.query(
       `
-        INSERT INTO messages (sender_id, receiver_id, body)
-        VALUES ($1, $2, $3);
+        INSERT INTO messages (
+          sender_id,
+          receiver_id,
+          body,
+          attachment_name,
+          attachment_mime_type,
+          attachment_category,
+          attachment_data,
+          attachment_size_bytes
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
       `,
-      [request.user.id, receiverId, body]
+      [
+        request.user.id,
+        receiverId,
+        body,
+        attachmentResult.attachment ? attachmentResult.attachment.fileName : null,
+        attachmentResult.attachment ? attachmentResult.attachment.mimeType : null,
+        attachmentResult.attachment ? attachmentResult.attachment.category : null,
+        attachmentResult.attachment ? attachmentResult.attachment.data : null,
+        attachmentResult.attachment ? attachmentResult.attachment.sizeBytes : 0,
+      ]
     );
 
     response.status(201).json({ ok: true });
