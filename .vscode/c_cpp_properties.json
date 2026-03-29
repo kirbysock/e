@@ -1,0 +1,31 @@
+{
+  "version": 4,
+  "configurations": [
+    {
+      "name": "Qt MinGW",
+      "compilerPath": "C:/mingw64/bin/g++.exe",
+      "intelliSenseMode": "windows-gcc-x64",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "defines": [
+        "UNICODE",
+        "_UNICODE",
+        "QT_CORE_LIB",
+        "QT_GUI_LIB",
+        "QT_WIDGETS_LIB",
+        "QT_NETWORK_LIB",
+        "QT_SQL_LIB"
+      ],
+      "includePath": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/src",
+        "C:/Qt/6.9.3/mingw_64/include",
+        "C:/Qt/6.9.3/mingw_64/include/QtCore",
+        "C:/Qt/6.9.3/mingw_64/include/QtGui",
+        "C:/Qt/6.9.3/mingw_64/include/QtWidgets",
+        "C:/Qt/6.9.3/mingw_64/include/QtNetwork",
+        "C:/Qt/6.9.3/mingw_64/include/QtSql"
+      ]
+    }
+  ]
+}
