@@ -1,0 +1,18 @@
+services:
+  - name: treex-chatting-api-20260329
+    type: web
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/status
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: treex-chatting-db-20260329
+          property: connectionString
+
+databases:
+  - name: treex-chatting-db-20260329
+    plan: free
